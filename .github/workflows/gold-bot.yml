@@ -1,0 +1,24 @@
+name: XAU alert bot
+
+on:
+  schedule:
+    - cron: "0 * * * *"      # ทุกต้นชั่วโมง (GitHub อาจดีเลย์ได้ 5–15 นาที)
+  workflow_dispatch:          # กดรันเองได้จากแท็บ Actions
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python gold_bot.py
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          ONLY_SIGNALS: "false"   # เปลี่ยนเป็น "true" ถ้าอยากได้เฉพาะรอบที่มีสัญญาณ
