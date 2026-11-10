@@ -56,6 +56,8 @@ def fetch_data():
         "tH": float(t["High"]), "tL": float(t["Low"]),
         "px": price, "stamp": stamp,
         "closes": [round(float(c), 1) for c in daily["Close"].iloc[-60:]],
+        "highs": [float(h) for h in daily["High"].iloc[-60:]],
+        "lows": [float(x) for x in daily["Low"].iloc[-60:]],
     }
 
 
@@ -99,7 +101,8 @@ def ai_analysis(d, r):
 ข้อมูลจากบอท (ราคาทองฟิวเจอร์ส GC=F):
 - ราคาตอนนี้ {d['px']:.1f} เวลา {d['stamp'].astimezone(BKK):%Y-%m-%d %H:%M} (เวลาไทย)
 - เมื่อวาน High {d['yH']:.1f} Low {d['yL']:.1f} Close {d['yC']:.1f}
-- Pivot P {r['P']:.1f} / S1 {r['S1']:.1f} / S2 {r['S2']:.1f} / R1 {r['R1']:.1f} / จุดเบรก {r['trig']:.1f}
+- {r.get('levels_text') or f"Pivot P {r['P']:.1f} / S1 {r['S1']:.1f} / S2 {r['S2']:.1f} / R1 {r['R1']:.1f} / จุดเบรก {r['trig']:.1f}"}
+- สไตล์ผู้ใช้: {"ซื้อตอนย่อลึก หวังกำไร 3% ขึ้นไป (ถือได้หลายวัน)" if r.get('mode') == 'dip3' else "ย่อซื้อ/เบรกขึ้น ตามแนว Pivot รายวัน"}
 - ผลตามกฎของบอท: {r['icon']} {r['title']} – {r['why']}
 - SMA20 {sma20:.1f} / SMA50 {sma50:.1f}
 - ราคาปิดรายวันย้อนหลัง (เก่า→ใหม่): {closes}
@@ -294,6 +297,126 @@ def format_message(d, r):
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------- กลยุทธ์ซื้อตอนย่อลึก หวังกำไร ≥ 3%
+STRATEGY = os.getenv("STRATEGY", "dip3")      # dip3 = ย่อลึกหวัง 3%+ / pivot = แนว Pivot รายวันแบบเดิม
+MIN_GAIN = float(os.getenv("MIN_GAIN", "3"))  # กำไรขั้นต่ำที่ต้องการ (%)
+MIN_RR = 1.5
+
+
+def _rsi(closes, n=14):
+    gains = losses = 0.0
+    for a, b in zip(closes[-n - 1:-1], closes[-n:]):
+        diff = b - a
+        gains += max(diff, 0)
+        losses += max(-diff, 0)
+    if losses == 0:
+        return 100.0
+    rs = gains / losses
+    return 100 - 100 / (1 + rs)
+
+
+def _atr(highs, lows, closes, n=14):
+    trs = []
+    for i in range(len(closes) - n, len(closes)):
+        prev = closes[i - 1]
+        trs.append(max(highs[i] - lows[i], abs(highs[i] - prev), abs(lows[i] - prev)))
+    return sum(trs) / len(trs)
+
+
+def evaluate_dip(d, news=False):
+    """หาจังหวะซื้อตอนราคาย่อลึกพอที่จะมีโอกาสเด้งกลับได้อย่างน้อย MIN_GAIN %"""
+    px = d["px"]
+    highs, lows, closes = d["highs"][:], d["lows"][:], d["closes"][:]
+    closes[-1] = px                                   # ใช้ราคาล่าสุดแทนราคาปิดวันนี้
+    highs[-1], lows[-1] = max(highs[-1], px), min(lows[-1], px)
+    h20, l20 = max(highs[-20:]), min(lows[-20:])
+    tL = lows[-1]
+    atr = _atr(highs, lows, closes)
+    rsi = _rsi(closes)
+    sma20 = sum(closes[-20:]) / 20
+    sma50 = sum(closes[-50:]) / min(50, len(closes))
+    dd = (h20 - px) / h20 * 100                       # ย่อจากยอด 20 วันกี่ %
+    target = l20 + 0.5 * (h20 - l20)                  # เป้า = ครึ่งทางของกรอบ 20 วัน (เด้งกลับ 50%)
+    gain = (target - px) / px * 100
+    stop = min(tL, l20) - 0.5 * atr
+    rr = (target - px) / (px - stop) if px > stop else 0
+    buy_below = target / (1 + MIN_GAIN / 100)         # ต้องซื้อต่ำกว่านี้ถึงจะได้กำไร ≥ MIN_GAIN
+    bounce_need = tL + 0.3 * atr                      # เด้งจาก low วันนี้อย่างน้อย 0.3 ATR
+    downtrend = sma20 < sma50 and px < sma50
+    lv = dict(mode="dip3", h20=h20, l20=l20, atr=atr, rsi=rsi, sma20=sma20, sma50=sma50, dd=dd,
+              target=target, gain=gain, stop=stop, rr=rr, buy_below=buy_below,
+              bounce_need=bounce_need, tL=tL, downtrend=downtrend,
+              levels_text=(f"ยอด 20 วัน {h20:.1f} / ฐาน 20 วัน {l20:.1f} / ATR14 {atr:.1f} / RSI14 {rsi:.0f} / "
+                           f"เป้าเด้ง {target:.1f} / ต้องซื้อต่ำกว่า {buy_below:.1f} ถึงได้ {MIN_GAIN:.0f}%"))
+
+    def out(icon, title, why, plan=None):
+        return dict(icon=icon, title=title, why=why, plan=plan, signal=icon in ("🟢", "🔴"), **lv)
+
+    plan = dict(entry=px, stop=stop, t1=target, t2=h20, rr=rr, gain=gain)
+    if news:
+        return out("🟠", "ห้ามเข้า: ช่วงข่าวสำคัญ", f"มีข่าว {news}", plan)
+    if px < l20 - 0.5 * atr or (px <= l20 * 1.002 and px - tL < 0.3 * atr):
+        return out("🔴", "ห้ามซื้อ: กำลังทำ low ใหม่", f"ราคาหลุดฐาน 20 วัน {r0(l20)} และยังไม่เด้ง")
+    if gain < MIN_GAIN:
+        return out("⚪", "ยังไม่ลงต่ำพอ", f"ถ้าซื้อตอนนี้ เด้งถึงเป้าได้แค่ {gain:.1f}%")
+    if px < bounce_need:
+        return out("⚪", "ลงต่ำพอแล้ว รอเด้งยืนยัน", f"ยังไม่เด้งจาก low วันนี้ ({r0(tL)})")
+    if rr < MIN_RR:
+        return out("🟠", "เด้งแล้วแต่ไม่คุ้มเสี่ยง", f"คุ้มเสี่ยงแค่ 1:{rr:.1f}", plan)
+    return out("🟢", "เข้าได้: ย่อลึกแล้วเริ่มเด้ง", f"ย่อจากยอด {dd:.1f}% RSI {rsi:.0f}", plan)
+
+
+def format_dip(d, r):
+    when = d["stamp"].astimezone(BKK).strftime("%H:%M")
+    v = verdict(r)
+    p = r.get("plan")
+    lines = [v, f"ราคาตอนนี้ {r0(d['px'])} ({when} น.)", ""]
+    t = r["title"]
+    if v.startswith("🟢"):
+        lines += ["รูปแบบ: ซื้อตอนย่อลึก หวังเด้งกลับ (ถือได้หลายวัน)",
+                  f"✅ จุดเข้า {r0(p['entry'])}",
+                  f"🛑 ตัดขาดทุน {r0(p['stop'])} (−{(p['entry'] - p['stop']) / p['entry'] * 100:.1f}%)",
+                  f"🎯 เป้า 1: {r0(p['t1'])} (+{p['gain']:.1f}%)",
+                  f"🎯 เป้า 2: {r0(p['t2'])} (+{(p['t2'] - p['entry']) / p['entry'] * 100:.1f}%) ยอดเดิม 20 วัน",
+                  f"⚖️ คุ้มเสี่ยง 1 : {p['rr']:.1f}",
+                  "",
+                  "ก่อนกดซื้อ เช็ค 3 ข้อ:",
+                  "1) กราฟ 1 ชม. แท่งล่าสุดปิดเขียว ไม่ทำ low ใหม่",
+                  "2) ไม่มีข่าวแรงใน 1 ชม.ข้างหน้า",
+                  "3) ขนาดไม้ เสียได้ไม่เกิน 1–2% ของพอร์ตถ้าโดนตัดขาดทุน"]
+        if r["downtrend"]:
+            lines.append("⚠️ เทรนด์ใหญ่ยังเป็นขาลง (ต่ำกว่า SMA50) เป็นการเล่นเด้ง ควรลดขนาดไม้")
+    elif v.startswith("⚪"):
+        if "ไม่ลงต่ำพอ" in t:
+            lines += [f"เหตุผล: ถ้าซื้อตอนนี้ เด้งถึงเป้าได้แค่ {r['gain']:.1f}% ไม่ถึง {MIN_GAIN:.0f}%",
+                      "",
+                      "จังหวะที่จะเปลี่ยนเป็น 🟢 เข้าได้:",
+                      f"• ราคาลงไปต่ำกว่า {r0(r['buy_below'])} (อีก {(d['px'] - r['buy_below']) / d['px'] * 100:.1f}%)",
+                      "• แล้วเด้งกลับขึ้นจาก low ของวันนั้นอย่างน้อย " + r0(0.3 * r['atr']) + " ดอลลาร์"]
+        else:
+            lines += [f"เหตุผล: ราคาลงต่ำพอแล้ว (เป้าเด้ง +{r['gain']:.1f}%) แต่ยังไม่เห็นแรงซื้อกลับ",
+                      "",
+                      "จังหวะที่จะเปลี่ยนเป็น 🟢 เข้าได้:",
+                      f"• ราคาเด้งกลับขึ้นไปยืนเหนือ {r0(r['bounce_need'])}"]
+        lines += ["", f"⚠️ ถ้าหลุด {r0(r['l20'] - 0.5 * r['atr'])} จะเปลี่ยนเป็น 🔴 ห้ามซื้อ"]
+    elif v.startswith("🟠"):
+        reason = {"ห้ามเข้า: ช่วงข่าวสำคัญ": "ใกล้เวลาข่าวสำคัญ ราคามักวิ่งแรงทั้งสองทาง รอข่าวออกแล้ว 30 นาที",
+                  "เด้งแล้วแต่ไม่คุ้มเสี่ยง": f"จุดตัดขาดทุนไกลเกินไปเทียบกับกำไร (1 : {r['rr']:.1f}) รอย่อกลับมาใกล้ low ก่อน"}.get(t, r["why"])
+        lines.append(f"เหตุผล: {reason}")
+    else:
+        lines += [f"เหตุผล: ราคาหลุดฐาน 20 วัน ({r0(r['l20'])}) และยังไม่มีแรงซื้อกลับ มีโอกาสลงต่อ",
+                  "",
+                  "รออะไร:",
+                  f"• รอราคาหยุดทำ low ใหม่ แล้วเด้งขึ้นอย่างน้อย {r0(0.3 * r['atr'])} ดอลลาร์",
+                  "• ห้ามรับมีดที่กำลังตก แม้ราคาจะดูถูก"]
+    trend = "ขาลง" if r["downtrend"] else ("ขาขึ้น" if r["sma20"] > r["sma50"] else "ไซด์เวย์")
+    lines += ["",
+              f"ภาพรวม: ย่อจากยอด 20 วัน {r['dd']:.1f}% | RSI {r['rsi']:.0f} | เทรนด์ {trend}",
+              f"กรอบ 20 วัน: {r0(r['l20'])} – {r0(r['h20'])} | ซื้อได้กำไร {MIN_GAIN:.0f}% ต้องต่ำกว่า {r0(r['buy_below'])}",
+              "แจ้งสถานการณ์ตามกฎ ไม่ใช่คำแนะนำการลงทุน"]
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------- senders
 def post(url, data, as_json=False):
     if as_json:
@@ -357,14 +480,17 @@ def main():
     if age_h > 2:
         print(f"ข้อมูลเก่า {age_h:.1f} ชม. (อาจเป็นช่วงพักตลาด) ข้ามรอบนี้")
         return
-    r = evaluate(d, news=news_soon(now))
+    if STRATEGY == "pivot":
+        r = evaluate(d, news=news_soon(now))
+    else:
+        r = evaluate_dip(d, news=news_soon(now))
     th_hour = now.astimezone(BKK).hour
     scheduled = os.getenv("GITHUB_EVENT_NAME") == "schedule"  # กดรันเองจะได้ข้อความเต็มเสมอ
     only_signals = ONLY_SIGNALS or (scheduled and th_hour not in FULL_HOURS)
     if only_signals and not r["signal"]:
         print("ไม่มีสัญญาณ ไม่ส่งข้อความ\n" + format_message(d, r))
         return
-    msg = format_message(d, r)
+    msg = format_dip(d, r) if r.get("mode") == "dip3" else format_message(d, r)
     ai = ai_analysis(d, r)
     if ai:
         msg += "\n\n🤖 AI วิเคราะห์ (Gemini)\n" + ai
