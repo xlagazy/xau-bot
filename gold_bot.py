@@ -14,6 +14,8 @@ from datetime import datetime, timezone, timedelta
 
 SYMBOL = os.getenv("SYMBOL", "GC=F")            # GC=F = ทองฟิวเจอร์ส COMEX (ใกล้เคียง Spot)
 ONLY_SIGNALS = os.getenv("ONLY_SIGNALS", "false").lower() == "true"
+# ชั่วโมง (เวลาไทย) ที่ส่งข้อความเต็มเสมอ รอบอื่นที่ตั้งเวลาไว้จะส่งเฉพาะตอนเป็น 🟢 หรือ 🔴
+FULL_HOURS = {int(h) for h in os.getenv("FULL_HOURS", "7,20").split(",") if h.strip()}
 NEWS_FILE = os.getenv("NEWS_FILE", "news_times.txt")
 BKK = timezone(timedelta(hours=7))
 
@@ -347,7 +349,10 @@ def main():
         print(f"ข้อมูลเก่า {age_h:.1f} ชม. (อาจเป็นช่วงพักตลาด) ข้ามรอบนี้")
         return
     r = evaluate(d, news=news_soon(now))
-    if ONLY_SIGNALS and not r["signal"]:
+    th_hour = now.astimezone(BKK).hour
+    scheduled = os.getenv("GITHUB_EVENT_NAME") == "schedule"  # กดรันเองจะได้ข้อความเต็มเสมอ
+    only_signals = ONLY_SIGNALS or (scheduled and th_hour not in FULL_HOURS)
+    if only_signals and not r["signal"]:
         print("ไม่มีสัญญาณ ไม่ส่งข้อความ\n" + format_message(d, r))
         return
     msg = format_message(d, r)
