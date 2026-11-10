@@ -58,7 +58,30 @@ def fetch_data():
 
 
 # ---------------------------------------------------------------- AI (Gemini)
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")  # Flash-Lite: โควต้าฟรีต่อวันพอสำหรับรันทุกชั่วโมง
+NEWS_RSS = ("https://news.google.com/rss/search?q=gold+price+OR+XAUUSD+OR+Fed+when:1d"
+            "&hl=en-US&gl=US&ceid=US:en")
+
+
+def fetch_news(limit=10):
+    """ดึงหัวข้อข่าวล่าสุดจาก Google News RSS (ฟรี ไม่ต้องใช้ key)"""
+    import xml.etree.ElementTree as ET
+    try:
+        req = urllib.request.Request(NEWS_RSS, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            root = ET.fromstring(resp.read())
+        items = []
+        for it in root.iter("item"):
+            title = (it.findtext("title") or "").strip()
+            date = (it.findtext("pubDate") or "").strip()[:22]
+            if title:
+                items.append(f"- {title} ({date})")
+            if len(items) >= limit:
+                break
+        return "\n".join(items) or "(ไม่พบข่าว)"
+    except Exception as exc:  # noqa: BLE001
+        print(f"ดึงข่าวไม่สำเร็จ: {exc}")
+        return "(ดึงข่าวไม่สำเร็จรอบนี้)"
 
 
 def ai_analysis(d, r):
@@ -79,6 +102,9 @@ def ai_analysis(d, r):
 - SMA20 {sma20:.1f} / SMA50 {sma50:.1f}
 - ราคาปิดรายวันย้อนหลัง (เก่า→ใหม่): {closes}
 
+หัวข้อข่าวล่าสุด 24 ชม. (ภาษาอังกฤษ จาก Google News):
+{fetch_news()}
+
 ระดับที่ใช้มี 4 ระดับ: 🟢 เข้าได้ / ⚪ ยังไม่ใช่จังหวะ / 🟠 ไม่ควรเข้า / 🔴 ห้ามซื้อ
 ผลของบอทตอนนี้คือ: {verdict(r)}
 
@@ -86,27 +112,29 @@ def ai_analysis(d, r):
 🧭 ความเห็น AI: เลือก 1 ระดับจาก 4 ระดับข้างบน แล้วบอกเหตุผลสั้นๆ
    กฎ: ระดับที่เลือกต้องเท่ากับหรือเข้มกว่าผลของบอทเท่านั้น (ลำดับจากหลวมไปเข้ม: 🟢 → ⚪ → 🟠 → 🔴) ห้ามเลือกระดับที่หลวมกว่าบอท เช่น บอทบอก ⚪ ห้ามตอบ 🟢
 📊 สัญญาณ: อธิบายผลของบอทแบบภาษาคน และความเสี่ยงที่ต้องระวัง
-📰 ข่าว: ค้นข่าวล่าสุด 24 ชม. ที่กระทบทอง (Fed, ดอลลาร์, ข้อมูลเศรษฐกิจสหรัฐฯ, ภูมิรัฐศาสตร์) แล้วสรุปผลต่อราคา ถ้ามีข่าวสำคัญกำลังจะออกให้บอกเวลา (เวลาไทย)
+📰 ข่าว: จากหัวข้อข่าวข้างบน สรุปเฉพาะข่าวที่กระทบทอง (Fed, ดอลลาร์, ข้อมูลเศรษฐกิจสหรัฐฯ, ภูมิรัฐศาสตร์) แล้วสรุปผลต่อราคา ถ้ามีข่าวสำคัญกำลังจะออกให้บอกเวลา (เวลาไทย)
 📈 เทรนด์: ประเมินเทรนด์ระยะสั้นและกลางจากราคาย้อนหลังและ SMA ว่าเทรนด์หนุนหรือขัดกับการซื้อ
 
 ห้ามสั่งให้ซื้อหรือขายแบบยืนยัน ให้พูดเป็นสถานการณ์และความเสี่ยงเท่านั้น ไม่ต้องมีคำนำหรือคำลงท้าย"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     headers = {"Content-Type": "application/json", "x-goog-api-key": key}
     base = {"contents": [{"parts": [{"text": prompt}]}]}
-    # ลองแบบค้นข่าวด้วย Google Search ก่อน ถ้าไม่ได้ค่อยลองแบบไม่ค้น
-    for body in ({**base, "tools": [{"google_search": {}}]}, base):
+    for attempt in range(2):
         try:
-            req = urllib.request.Request(url, json.dumps(body).encode(), headers)
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            req = urllib.request.Request(url, json.dumps(base).encode(), headers)
+            with urllib.request.urlopen(req, timeout=90) as resp:
                 data = json.loads(resp.read().decode())
             parts = data["candidates"][0]["content"]["parts"]
             text = "".join(p.get("text", "") for p in parts).strip()
             if text:
-                return text[:1500]
+                return text[:1800]
         except urllib.error.HTTPError as exc:
             print(f"Gemini ตอบ HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}")
+            if exc.code in (400, 401, 403, 404):
+                break  # key หรือชื่อโมเดลผิด ลองซ้ำก็ไม่ช่วย
         except Exception as exc:  # noqa: BLE001
             print(f"เรียก Gemini ไม่สำเร็จ: {exc}")
+        time.sleep(10)
     return None
 
 
@@ -229,7 +257,7 @@ def format_message(d, r):
         if r["tL"] > S1:
             lines.append(f"• ย่อซื้อ: ราคาลงแตะ {r0(S1)} แล้วเด้งกลับขึ้นเหนือ {r0(S1 + 0.2 * R)}")
         else:
-            lines.append(f"• ย่อซื้อ: แตะ {r0(S1)} แล้ว รอเด้งให้ถึง {r0(r['tL'] + 0.2 * R)}")
+            lines.append(f"• ย่อซื้อ: ราคาลงแตะ {r0(S1)} ไปแล้ว รอเด้งกลับขึ้นไปยืนเหนือ {r0(r['tL'] + 0.2 * R)}")
         lines.append(f"• เบรกขึ้น: ราคายืนเหนือ {r0(trig)} ได้ แล้วรอย่อซื้อแถว {r0(d['yH'])}")
         lines.append("")
         lines.append(f"⚠️ ถ้าหลุด {r0(S2)} จะเปลี่ยนเป็น 🔴 ห้ามซื้อ")
