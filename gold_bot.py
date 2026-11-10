@@ -315,8 +315,17 @@ def send(text):
     sent = False
     tok, chat = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
     if tok and chat:
-        post(f"https://api.telegram.org/bot{tok}/sendMessage", {"chat_id": chat, "text": text})
-        sent = True
+        # ใส่ได้หลายปลายทาง คั่นด้วยจุลภาค เช่น 5888071832,-1001234567890
+        errors = []
+        for cid in [c.strip() for c in chat.split(",") if c.strip()]:
+            try:
+                post(f"https://api.telegram.org/bot{tok}/sendMessage", {"chat_id": cid, "text": text})
+                sent = True
+            except Exception as exc:  # noqa: BLE001  ปลายทางหนึ่งพัง ไม่ให้กระทบปลายทางอื่น
+                errors.append(exc)
+                print(f"ส่งไปที่ {cid} ไม่สำเร็จ: {exc}")
+        if errors and not sent:
+            raise errors[0]
     hook = os.getenv("SLACK_WEBHOOK_URL")
     if hook:
         post(hook, {"text": text}, as_json=True)
