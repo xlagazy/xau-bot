@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import urllib.request
+import urllib.error
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 
@@ -173,8 +174,14 @@ def post(url, data, as_json=False):
         req = urllib.request.Request(url, body, {"Content-Type": "application/json"})
     else:
         req = urllib.request.Request(url, urllib.parse.urlencode(data).encode())
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return resp.status
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        # แสดงเหตุผลที่ปลายทางตอบกลับ (ไม่มี token อยู่ในข้อความนี้)
+        body = exc.read().decode("utf-8", "replace")
+        print(f"ส่งข้อความไม่สำเร็จ HTTP {exc.code}: {body}")
+        raise
 
 
 def send(text):
