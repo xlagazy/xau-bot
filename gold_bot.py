@@ -38,7 +38,7 @@ def market_closed(now_utc):
 def fetch_data():
     import yfinance as yf
     tk = yf.Ticker(SYMBOL)
-    daily = tk.history(period="10d", interval="1d").dropna()
+    daily = tk.history(period="4mo", interval="1d").dropna()  # ย้อนหลังพอให้ AI ดูเทรนด์
     if len(daily) < 2:
         raise RuntimeError("ดึงข้อมูลรายวันไม่พอ")
     intra = tk.history(period="1d", interval="5m").dropna()
@@ -53,7 +53,56 @@ def fetch_data():
         "yH": float(y["High"]), "yL": float(y["Low"]), "yC": float(y["Close"]),
         "tH": float(t["High"]), "tL": float(t["Low"]),
         "px": price, "stamp": stamp,
+        "closes": [round(float(c), 1) for c in daily["Close"].iloc[-60:]],
     }
+
+
+# ---------------------------------------------------------------- AI (Gemini)
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+
+
+def ai_analysis(d, r):
+    """ให้ Gemini อธิบายสัญญาณ สรุปข่าว และประเมินเทรนด์ ถ้าไม่มี key หรือเรียกไม่สำเร็จ จะคืน None"""
+    key = os.getenv("GEMINI_API_KEY")
+    if not key:
+        return None
+    closes = d["closes"]
+    sma20 = sum(closes[-20:]) / min(20, len(closes))
+    sma50 = sum(closes[-50:]) / min(50, len(closes))
+    prompt = f"""คุณเป็นผู้ช่วยวิเคราะห์ทองคำ XAU/USD เขียนภาษาไทยสั้น กระชับ อ่านง่ายบนมือถือ
+
+ข้อมูลจากบอท (ราคาทองฟิวเจอร์ส GC=F):
+- ราคาตอนนี้ {d['px']:.1f} เวลา {d['stamp'].astimezone(BKK):%Y-%m-%d %H:%M} (เวลาไทย)
+- เมื่อวาน High {d['yH']:.1f} Low {d['yL']:.1f} Close {d['yC']:.1f}
+- Pivot P {r['P']:.1f} / S1 {r['S1']:.1f} / S2 {r['S2']:.1f} / R1 {r['R1']:.1f} / จุดเบรก {r['trig']:.1f}
+- ผลตามกฎของบอท: {r['icon']} {r['title']} – {r['why']}
+- SMA20 {sma20:.1f} / SMA50 {sma50:.1f}
+- ราคาปิดรายวันย้อนหลัง (เก่า→ใหม่): {closes}
+
+ตอบเป็น 3 หัวข้อ หัวข้อละไม่เกิน 2 บรรทัด ใช้รูปแบบนี้เท่านั้น:
+📊 สัญญาณ: อธิบายผลของบอทแบบภาษาคน และความเสี่ยงที่ต้องระวัง
+📰 ข่าว: ค้นข่าวล่าสุด 24 ชม. ที่กระทบทอง (Fed, ดอลลาร์, ข้อมูลเศรษฐกิจสหรัฐฯ, ภูมิรัฐศาสตร์) แล้วสรุปผลต่อราคา ถ้ามีข่าวสำคัญกำลังจะออกให้บอกเวลา (เวลาไทย)
+📈 เทรนด์: ประเมินเทรนด์ระยะสั้นและกลางจากราคาย้อนหลังและ SMA
+
+ห้ามสั่งให้ซื้อหรือขายแบบยืนยัน ให้พูดเป็นสถานการณ์และความเสี่ยงเท่านั้น ไม่ต้องมีคำนำหรือคำลงท้าย"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    headers = {"Content-Type": "application/json", "x-goog-api-key": key}
+    base = {"contents": [{"parts": [{"text": prompt}]}]}
+    # ลองแบบค้นข่าวด้วย Google Search ก่อน ถ้าไม่ได้ค่อยลองแบบไม่ค้น
+    for body in ({**base, "tools": [{"google_search": {}}]}, base):
+        try:
+            req = urllib.request.Request(url, json.dumps(body).encode(), headers)
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode())
+            parts = data["candidates"][0]["content"]["parts"]
+            text = "".join(p.get("text", "") for p in parts).strip()
+            if text:
+                return text[:1500]
+        except urllib.error.HTTPError as exc:
+            print(f"Gemini ตอบ HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"เรียก Gemini ไม่สำเร็จ: {exc}")
+    return None
 
 
 def news_soon(now_utc, path=NEWS_FILE):
@@ -226,7 +275,11 @@ def main():
     if ONLY_SIGNALS and not r["signal"]:
         print("ไม่มีสัญญาณ ไม่ส่งข้อความ\n" + format_message(d, r))
         return
-    send(format_message(d, r))
+    msg = format_message(d, r)
+    ai = ai_analysis(d, r)
+    if ai:
+        msg += "\n\n🤖 AI วิเคราะห์ (Gemini)\n" + ai
+    send(msg)
 
 
 if __name__ == "__main__":
