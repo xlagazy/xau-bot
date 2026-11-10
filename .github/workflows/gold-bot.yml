@@ -2,7 +2,10 @@ name: XAU alert bot
 
 on:
   schedule:
-    - cron: "0 * * * *"      # ทุกต้นชั่วโมง (GitHub อาจดีเลย์ได้ 5–15 นาที)
+    # เวลาเป็น UTC (เวลาไทย = UTC+7) วันจันทร์–ศุกร์
+    # 00 UTC = 07:00 น. สรุปเช้า / 07–18 UTC = 14:00–01:00 น. ทุกชั่วโมง
+    # ส่งข้อความเต็มตอน 07:00 และ 20:00 น. ชั่วโมงอื่นส่งเฉพาะ 🟢 เข้าได้ / 🔴 ห้ามซื้อ
+    - cron: "0 0,7-18 * * 1-5"
   workflow_dispatch:          # กดรันเองได้จากแท็บ Actions
 
 jobs:
@@ -22,4 +25,5 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ONLY_SIGNALS: "false"   # เปลี่ยนเป็น "true" ถ้าอยากได้เฉพาะรอบที่มีสัญญาณ
+          ONLY_SIGNALS: "false"   # "true" = ส่งเฉพาะรอบที่มีสัญญาณทุกรอบ รวมถึง 07:00/20:00
+          FULL_HOURS: "7,20"      # ชั่วโมงเวลาไทยที่ส่งข้อความเต็ม
