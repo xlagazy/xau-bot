@@ -6,6 +6,7 @@ XAU Alert Bot – เช็คจังหวะเข้าซื้อทอ�
 import os
 import sys
 import json
+import time
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -204,10 +205,18 @@ def main():
     if market_closed(now):
         print("ตลาดปิด ข้ามรอบนี้")
         return
-    try:
-        d = fetch_data()
-    except Exception as exc:  # noqa: BLE001
-        send(f"⚠️ ดึงราคาทองไม่สำเร็จรอบนี้ ({exc}) จะลองใหม่รอบหน้า")
+    d, last_exc = None, None
+    for attempt in range(3):  # ลองสูงสุด 3 ครั้ง เผื่อ Yahoo จำกัดจำนวนครั้ง
+        try:
+            d = fetch_data()
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            print(f"ดึงราคาไม่สำเร็จ ครั้งที่ {attempt + 1}: {exc}")
+            if attempt < 2:
+                time.sleep(20 * (attempt + 1))
+    if d is None:
+        send(f"⚠️ ดึงราคาทองไม่สำเร็จรอบนี้ ({last_exc}) จะลองใหม่รอบหน้า")
         return
     age_h = (now - d["stamp"].astimezone(timezone.utc)).total_seconds() / 3600
     if age_h > 2:
