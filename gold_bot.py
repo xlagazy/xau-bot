@@ -485,7 +485,8 @@ def main():
     else:
         r = evaluate_dip(d, news=news_soon(now))
     th_hour = now.astimezone(BKK).hour
-    scheduled = os.getenv("GITHUB_EVENT_NAME") == "schedule"  # กดรันเองจะได้ข้อความเต็มเสมอ
+    # รอบตามตาราง = GitHub schedule หรือสั่งจาก cron-job.org ด้วย mode=auto / กดรันเองได้ข้อความเต็มเสมอ
+    scheduled = os.getenv("GITHUB_EVENT_NAME") == "schedule" or os.getenv("RUN_MODE") == "auto"
     only_signals = ONLY_SIGNALS or (scheduled and th_hour not in FULL_HOURS)
     if only_signals and not r["signal"]:
         print("ไม่มีสัญญาณ ไม่ส่งข้อความ\n" + (format_dip(d, r) if r.get("mode") == "dip3" else format_message(d, r)))
