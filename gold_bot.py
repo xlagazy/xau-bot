@@ -488,7 +488,7 @@ def main():
     scheduled = os.getenv("GITHUB_EVENT_NAME") == "schedule"  # กดรันเองจะได้ข้อความเต็มเสมอ
     only_signals = ONLY_SIGNALS or (scheduled and th_hour not in FULL_HOURS)
     if only_signals and not r["signal"]:
-        print("ไม่มีสัญญาณ ไม่ส่งข้อความ\n" + format_message(d, r))
+        print("ไม่มีสัญญาณ ไม่ส่งข้อความ\n" + (format_dip(d, r) if r.get("mode") == "dip3" else format_message(d, r)))
         return
     msg = format_dip(d, r) if r.get("mode") == "dip3" else format_message(d, r)
     ai = ai_analysis(d, r)
