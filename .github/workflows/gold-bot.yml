@@ -6,7 +6,13 @@ on:
     # 00–18 UTC = 07:07–01:07 น. ทุกชั่วโมง
     # ส่งข้อความเต็มตอน 07:00 และ 20:00 น. ชั่วโมงอื่นส่งเฉพาะ 🟢 เข้าได้ / 🔴 ห้ามซื้อ
     - cron: "7 0-18 * * 1-5"   # นาทีที่ 7 เลี่ยงต้นชั่วโมงที่ GitHub มักข้ามรอบ
-  workflow_dispatch:          # กดรันเองได้จากแท็บ Actions
+  workflow_dispatch:          # กดรันเองได้จากแท็บ Actions หรือสั่งจาก cron-job.org
+    inputs:
+      mode:
+        description: "full = ส่งข้อความเต็มเสมอ / auto = ทำตามตาราง (เต็มตอน 07/20 น. นอกนั้นเฉพาะ 🟢/🔴)"
+        type: choice
+        options: [full, auto]
+        default: full
 
 jobs:
   check:
@@ -27,3 +33,4 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ONLY_SIGNALS: "false"   # "true" = ส่งเฉพาะรอบที่มีสัญญาณทุกรอบ รวมถึง 07:00/20:00
           FULL_HOURS: "7,20"      # ชั่วโมงเวลาไทยที่ส่งข้อความเต็ม
+          RUN_MODE: ${{ inputs.mode }}
