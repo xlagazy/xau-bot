@@ -37,3 +37,10 @@ jobs:
           ONLY_SIGNALS: "false"   # "true" = ส่งเฉพาะรอบที่มีสัญญาณทุกรอบ รวมถึง 07:00/20:00
           FULL_HOURS: "7,20"      # ชั่วโมงเวลาไทยที่ส่งข้อความเต็ม
           RUN_MODE: ${{ inputs.mode }}
+          # โหมดถือของ: ตั้งใน Settings → Secrets and variables → Actions → Variables
+          # ENTRY_PRICE ว่าง = หาจังหวะซื้อ / ใส่ราคาซื้อ = บอกว่าขายได้หรือยัง
+          ENTRY_PRICE: ${{ vars.ENTRY_PRICE }}
+          BUY_DATE: ${{ vars.BUY_DATE }}
+          TAKE_PROFIT: ${{ vars.TAKE_PROFIT }}
+          STOP_ATR: ${{ vars.STOP_ATR }}
+          TRAIL_ATR: ${{ vars.TRAIL_ATR }}
