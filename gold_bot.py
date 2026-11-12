@@ -40,6 +40,49 @@ def market_closed(now_utc):
     return False
 
 
+SPOT_SOURCES = (
+    # (ชื่อ, url, ฟังก์ชันอ่านราคา) – ฟรี ไม่ต้องใช้ key ราคา Spot XAU/USD แบบ real time
+    ("Swissquote", "https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD",
+     lambda j: (j[0]["spreadProfilePrices"][0]["bid"] + j[0]["spreadProfilePrices"][0]["ask"]) / 2),
+    ("gold-api.com", "https://api.gold-api.com/price/XAU", lambda j: j["price"]),
+)
+
+
+def fetch_spot():
+    """ราคา Spot ทองล่าสุด (real time) ลองทีละแหล่ง ถ้าไม่ได้ทั้งหมดคืน (None, None)"""
+    for name, url, parse in SPOT_SOURCES:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                px = float(parse(json.loads(resp.read().decode())))
+            if 500 < px < 20000:
+                return px, name
+        except Exception as exc:  # noqa: BLE001
+            print(f"ดึงราคา Spot จาก {name} ไม่สำเร็จ: {exc}")
+    return None, None
+
+
+def to_spot(d):
+    """Yahoo GC=F ช้า ~10 นาที และเป็นราคาฟิวเจอร์ส (แพงกว่า Spot เล็กน้อย)
+    ใช้ราคา Spot real time เป็นราคาปัจจุบัน แล้วเลื่อนข้อมูลย้อนหลังลงมาเท่าส่วนต่าง ให้แนวต่างๆ อยู่ในสเกลเดียวกัน"""
+    spot, src = fetch_spot()
+    if spot is None:
+        print("ใช้ราคา GC=F จาก Yahoo แทน (ช้า ~10 นาที)")
+        d["src"] = "Yahoo GC=F (ช้า ~10 นาที)"
+        return d
+    basis = d["px"] - spot
+    if abs(basis) > 0.03 * spot:  # ส่วนต่างผิดปกติ (เช่นตลาดเพิ่งเปิด) ไม่เลื่อนข้อมูล
+        print(f"ส่วนต่างฟิวเจอร์ส-Spot ผิดปกติ ({basis:.1f}) ไม่เลื่อนข้อมูลย้อนหลัง")
+        basis = 0.0
+    for k in ("yH", "yL", "yC", "tH", "tL"):
+        d[k] -= basis
+    for k in ("closes", "highs", "lows"):
+        d[k] = [x - basis for x in d[k]]
+    d["px"], d["stamp"], d["src"] = spot, datetime.now(timezone.utc), src
+    print(f"ราคา Spot {spot:.2f} จาก {src} (ส่วนต่างกับ GC=F {basis:+.1f})")
+    return d
+
+
 def fetch_data():
     import yfinance as yf
     tk = yf.Ticker(SYMBOL)
@@ -118,7 +161,7 @@ def ai_analysis(d, r):
         topics = "📈 เทรนด์: ประเมินเทรนด์ระยะสั้นและกลางจากราคาย้อนหลังและ SMA ว่าเทรนด์หนุนหรือขัดกับการซื้อ"
     prompt = f"""คุณเป็นผู้ช่วยวิเคราะห์ทองคำ XAU/USD เขียนภาษาไทยสั้น กระชับ อ่านง่ายบนมือถือ
 
-ข้อมูลจากบอท (ราคาทองฟิวเจอร์ส GC=F):
+ข้อมูลจากบอท (ราคา Spot XAU/USD real time ข้อมูลย้อนหลังปรับจาก GC=F ให้อยู่สเกล Spot):
 - ราคาตอนนี้ {d['px']:.1f} เวลา {d['stamp'].astimezone(BKK):%Y-%m-%d %H:%M} (เวลาไทย)
 - เมื่อวาน High {d['yH']:.1f} Low {d['yL']:.1f} Close {d['yC']:.1f}
 - {r.get('levels_text') or f"Pivot P {r['P']:.1f} / S1 {r['S1']:.1f} / S2 {r['S2']:.1f} / R1 {r['R1']:.1f} / จุดเบรก {r['trig']:.1f}"}
@@ -629,7 +672,7 @@ def main():
     d, last_exc = None, None
     for attempt in range(3):  # ลองสูงสุด 3 ครั้ง เผื่อ Yahoo จำกัดจำนวนครั้ง
         try:
-            d = fetch_data()
+            d = to_spot(fetch_data())
             break
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
