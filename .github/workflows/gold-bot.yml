@@ -1,18 +1,21 @@
 name: XAU alert bot
 
 on:
-  schedule:
-    # เวลาเป็น UTC (เวลาไทย = UTC+7) วันจันทร์–ศุกร์
-    # 00–18 UTC = 07:07–01:07 น. ทุกชั่วโมง
-    # ส่งข้อความเต็มตอน 07:00 และ 20:00 น. ชั่วโมงอื่นส่งเฉพาะ 🟢 เข้าได้ / 🔴 ห้ามซื้อ
-    - cron: "7 0-18 * * 1-5"   # นาทีที่ 7 เลี่ยงต้นชั่วโมงที่ GitHub มักข้ามรอบ
-  workflow_dispatch:          # กดรันเองได้จากแท็บ Actions หรือสั่งจาก cron-job.org
+  # ไม่ใช้ schedule ของ GitHub แล้ว (ช้า/ข้ามรอบบ่อย)
+  # ตอนนี้ cron-job.org เป็นตัวสั่งรันผ่าน GitHub API ด้วย mode=auto
+  # ตารางเดิม: นาทีที่ 0 ชั่วโมง 0–18 UTC วันจันทร์–ศุกร์ (= 07:00–01:00 น. เวลาไทย)
+  workflow_dispatch:
     inputs:
       mode:
         description: "full = ส่งข้อความเต็มเสมอ / auto = ทำตามตาราง (เต็มตอน 07/20 น. นอกนั้นเฉพาะ 🟢/🔴)"
         type: choice
         options: [full, auto]
         default: full
+
+# กันรันซ้อนกันถ้า cron ยิงซ้ำในเวลาใกล้กัน
+concurrency:
+  group: xau-bot
+  cancel-in-progress: false
 
 jobs:
   check:
