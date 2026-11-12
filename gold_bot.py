@@ -1,5 +1,8 @@
 """
 XAU Alert Bot – เช็คจังหวะเข้าซื้อทองทุก 1 ชม. แล้วส่งข้อความเข้า Telegram (หรือ Slack)
+มี 2 โหมด สลับด้วย GitHub Variable ENTRY_PRICE
+  - ว่าง / 0  = ยังไม่มีของ → หาจังหวะซื้อ
+  - ใส่ราคาซื้อ = ถือของอยู่ → บอกว่าขายได้หรือยัง (เป้าแรก TAKE_PROFIT % แล้วเลื่อนจุดขายตามถ้ายังขึ้นต่อ)
 ใช้ Pivot Point จากแท่งวันก่อนหน้า คำนวณใหม่ทุกครั้ง ไม่ต้องกำหนดราคาล่วงหน้า
 แจ้งสถานการณ์เท่านั้น ไม่ใช่คำแนะนำการลงทุน
 """
@@ -58,6 +61,7 @@ def fetch_data():
         "closes": [round(float(c), 1) for c in daily["Close"].iloc[-60:]],
         "highs": [float(h) for h in daily["High"].iloc[-60:]],
         "lows": [float(x) for x in daily["Low"].iloc[-60:]],
+        "dates": [ix.date() for ix in daily.index[-60:]],
     }
 
 
@@ -96,13 +100,29 @@ def ai_analysis(d, r):
     closes = d["closes"]
     sma20 = sum(closes[-20:]) / min(20, len(closes))
     sma50 = sum(closes[-50:]) / min(50, len(closes))
+    if r.get("mode") == "hold":
+        style = (f"ผู้ใช้ถือทองอยู่ ซื้อที่ {r['entry']:.1f} อยากขายทำกำไรให้ได้มากที่สุด "
+                 f"เป้าแรก +{TAKE_PROFIT:.0f}% ถ้าแนวโน้มยังขึ้นให้ถือต่อแล้วเลื่อนจุดขายตาม")
+        levels = ("🟢 ขายได้ / 🔵 ถึงเป้าแล้ว ยังขึ้นต่อ ถือต่อได้ / ⚪ ถือต่อ ยังไม่ถึงเป้า / "
+                  "🟠 ระวัง กำไรลดลง / 🔴 ตัดขาดทุน")
+        rule = ("กฎ: ถ้าบอทบอก 🟢 หรือ 🔴 ห้ามเปลี่ยนเป็นถือต่อ ถ้าบอทบอก 🔵 ให้ประเมินว่าเป้าถัดไปที่บอทเสนอ "
+                "สมเหตุสมผลไหม หรือควรทยอยขายบางส่วน")
+        topics = ("📈 เทรนด์: แนวโน้มยังหนุนให้ถือต่อไหม เป้าถัดไปที่น่าจะไปถึงได้กี่ % "
+                  "และสัญญาณอะไรที่บอกว่าควรขาย")
+    else:
+        style = ("ซื้อตอนย่อลึก หวังกำไร 3% ขึ้นไป (ถือได้หลายวัน)" if r.get('mode') == 'dip3'
+                 else "ย่อซื้อ/เบรกขึ้น ตามแนว Pivot รายวัน")
+        levels = "🟢 เข้าได้ / ⚪ ยังไม่ใช่จังหวะ / 🟠 ไม่ควรเข้า / 🔴 ห้ามซื้อ"
+        rule = ("กฎ: ระดับที่เลือกต้องเท่ากับหรือเข้มกว่าผลของบอทเท่านั้น (ลำดับจากหลวมไปเข้ม: 🟢 → ⚪ → 🟠 → 🔴) "
+                "ห้ามเลือกระดับที่หลวมกว่าบอท เช่น บอทบอก ⚪ ห้ามตอบ 🟢")
+        topics = "📈 เทรนด์: ประเมินเทรนด์ระยะสั้นและกลางจากราคาย้อนหลังและ SMA ว่าเทรนด์หนุนหรือขัดกับการซื้อ"
     prompt = f"""คุณเป็นผู้ช่วยวิเคราะห์ทองคำ XAU/USD เขียนภาษาไทยสั้น กระชับ อ่านง่ายบนมือถือ
 
 ข้อมูลจากบอท (ราคาทองฟิวเจอร์ส GC=F):
 - ราคาตอนนี้ {d['px']:.1f} เวลา {d['stamp'].astimezone(BKK):%Y-%m-%d %H:%M} (เวลาไทย)
 - เมื่อวาน High {d['yH']:.1f} Low {d['yL']:.1f} Close {d['yC']:.1f}
 - {r.get('levels_text') or f"Pivot P {r['P']:.1f} / S1 {r['S1']:.1f} / S2 {r['S2']:.1f} / R1 {r['R1']:.1f} / จุดเบรก {r['trig']:.1f}"}
-- สไตล์ผู้ใช้: {"ซื้อตอนย่อลึก หวังกำไร 3% ขึ้นไป (ถือได้หลายวัน)" if r.get('mode') == 'dip3' else "ย่อซื้อ/เบรกขึ้น ตามแนว Pivot รายวัน"}
+- สไตล์ผู้ใช้: {style}
 - ผลตามกฎของบอท: {r['icon']} {r['title']} – {r['why']}
 - SMA20 {sma20:.1f} / SMA50 {sma50:.1f}
 - ราคาปิดรายวันย้อนหลัง (เก่า→ใหม่): {closes}
@@ -110,15 +130,15 @@ def ai_analysis(d, r):
 หัวข้อข่าวล่าสุด 24 ชม. (ภาษาอังกฤษ จาก Google News):
 {fetch_news()}
 
-ระดับที่ใช้มี 4 ระดับ: 🟢 เข้าได้ / ⚪ ยังไม่ใช่จังหวะ / 🟠 ไม่ควรเข้า / 🔴 ห้ามซื้อ
+ระดับที่ใช้: {levels}
 ผลของบอทตอนนี้คือ: {verdict(r)}
 
 ตอบเป็น 4 หัวข้อ หัวข้อละไม่เกิน 2 บรรทัด ใช้รูปแบบนี้เท่านั้น:
-🧭 ความเห็น AI: เลือก 1 ระดับจาก 4 ระดับข้างบน แล้วบอกเหตุผลสั้นๆ
-   กฎ: ระดับที่เลือกต้องเท่ากับหรือเข้มกว่าผลของบอทเท่านั้น (ลำดับจากหลวมไปเข้ม: 🟢 → ⚪ → 🟠 → 🔴) ห้ามเลือกระดับที่หลวมกว่าบอท เช่น บอทบอก ⚪ ห้ามตอบ 🟢
+🧭 ความเห็น AI: เลือก 1 ระดับจากระดับข้างบน แล้วบอกเหตุผลสั้นๆ
+   {rule}
 📊 สัญญาณ: อธิบายผลของบอทแบบภาษาคน และความเสี่ยงที่ต้องระวัง
 📰 ข่าว: จากหัวข้อข่าวข้างบน สรุปเฉพาะข่าวที่กระทบทอง (Fed, ดอลลาร์, ข้อมูลเศรษฐกิจสหรัฐฯ, ภูมิรัฐศาสตร์) แล้วสรุปผลต่อราคา ถ้ามีข่าวสำคัญกำลังจะออกให้บอกเวลา (เวลาไทย)
-📈 เทรนด์: ประเมินเทรนด์ระยะสั้นและกลางจากราคาย้อนหลังและ SMA ว่าเทรนด์หนุนหรือขัดกับการซื้อ
+{topics}
 
 ห้ามสั่งให้ซื้อหรือขายแบบยืนยัน ให้พูดเป็นสถานการณ์และความเสี่ยงเท่านั้น ไม่ต้องมีคำนำหรือคำลงท้าย"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
@@ -225,6 +245,9 @@ def r0(n):
 def verdict(r):
     """แปลงผลของกฎเป็น 4 ระดับ: เข้าได้ / ยังไม่ใช่จังหวะ / ไม่ควรเข้า / ห้ามซื้อ"""
     t = r["title"]
+    if r.get("mode") == "hold":
+        return {"🟢": "🟢 ขายได้", "🔵": "🔵 ถึงเป้าแล้ว ยังขึ้นต่อ ถือต่อได้", "🟠": "🟠 ระวัง กำไรลดลง",
+                "🔴": "🔴 ตัดขาดทุน", "⚪": "⚪ ถือต่อ ยังไม่ถึงเป้า"}.get(r["icon"], "⚠️ ข้อมูลผิดปกติ")
     if r["icon"] == "🟢":
         return "🟢 เข้าได้"
     if r["icon"] == "🔴" or t.startswith("ข้อมูลผิดปกติ"):
@@ -417,6 +440,146 @@ def format_dip(d, r):
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------- โหมดถือของอยู่: บอกว่าขายได้หรือยัง
+# ตั้งค่าใน GitHub → Settings → Secrets and variables → Actions → Variables
+ENTRY_PRICE = float(os.getenv("ENTRY_PRICE") or 0)  # ราคาที่ซื้อ (USD/ออนซ์) ว่างหรือ 0 = ยังไม่มีของ → โหมดหาจังหวะซื้อ
+BUY_DATE = (os.getenv("BUY_DATE") or "").strip()    # วันที่ซื้อ YYYY-MM-DD ใช้หาราคาสูงสุดตั้งแต่ซื้อ (แนะนำให้ใส่)
+TAKE_PROFIT = float(os.getenv("TAKE_PROFIT") or 3)  # เป้ากำไรขั้นแรก (%)
+STOP_ATR = float(os.getenv("STOP_ATR") or 1.5)      # ตัดขาดทุน = ราคาซื้อ − STOP_ATR × ATR
+TRAIL_ATR = float(os.getenv("TRAIL_ATR") or 2)      # ถึงเป้าแล้ว จุดขายตาม = ราคาสูงสุดตั้งแต่ซื้อ − TRAIL_ATR × ATR
+TIERS = [5, 7, 10, 15, 20, 30, 50]                  # เป้าถัดไป (%) ที่บอทจะเสนอเมื่อยังขึ้นต่อ
+
+
+def evaluate_hold(d, news=False):
+    """ถือของอยู่: ถึงเป้าแรกแล้วยังขึ้นต่อ = ถือต่อและเลื่อนจุดขายตาม / แรงขึ้นหมดหรือหลุดจุดขายตาม = ขายได้"""
+    e, px = ENTRY_PRICE, d["px"]
+    highs, lows, closes = d["highs"][:], d["lows"][:], d["closes"][:]
+    closes[-1] = px
+    highs[-1], lows[-1] = max(highs[-1], px), min(lows[-1], px)
+    atr, rsi = _atr(highs, lows, closes), _rsi(closes)
+    sma20 = sum(closes[-20:]) / 20
+    sma20_prev = sum(closes[-25:-5]) / 20              # SMA20 เมื่อ 5 วันก่อน ใช้ดูว่าเส้นยังชันขึ้นไหม
+    sma50 = sum(closes[-50:]) / min(50, len(closes))
+
+    since = highs[-1:]                                  # ไม่รู้วันที่ซื้อ ใช้ยอดของวันนี้
+    if BUY_DATE:
+        try:
+            bd = datetime.strptime(BUY_DATE, "%Y-%m-%d").date()
+            idx = next((i for i, dt in enumerate(d["dates"]) if dt >= bd), len(highs) - 1)
+            since = highs[idx:]
+        except ValueError:
+            print(f"BUY_DATE ไม่ถูกรูปแบบ (ต้องเป็น YYYY-MM-DD): {BUY_DATE}")
+    peak = max(since + [px, e])
+
+    gain = (px - e) / e * 100
+    peak_gain = (peak - e) / e * 100
+    tp_price = e * (1 + TAKE_PROFIT / 100)
+    stop = e - STOP_ATR * atr
+    reached = peak_gain >= TAKE_PROFIT                  # เคยแตะเป้าแรกแล้ว
+    # ถึงเป้าแล้ว: เลื่อนจุดขายตามราคาสูงสุด แต่ล็อกกำไรไว้อย่างน้อยครึ่งหนึ่งของเป้าแรก
+    trail = max(peak - TRAIL_ATR * atr, e * (1 + TAKE_PROFIT / 200)) if reached else None
+    uptrend = px > sma20 and sma20 > sma20_prev
+    near_peak = px >= peak - atr
+    overbought = rsi >= 80
+    nxt = next((t for t in TIERS if t > max(gain, TAKE_PROFIT) + 0.5), TIERS[-1])
+    nxt_price = e * (1 + nxt / 100)
+    res = [h for h in (max(highs[-20:]), max(highs)) if h > px * 1.002]
+    resistance = min(res) if res else None
+
+    lv = dict(mode="hold", entry=e, gain=gain, peak=peak, peak_gain=peak_gain, tp_price=tp_price,
+              stop=stop, trail=trail, atr=atr, rsi=rsi, sma20=sma20, sma50=sma50, uptrend=uptrend,
+              near_peak=near_peak, overbought=overbought, nxt=nxt, nxt_price=nxt_price,
+              resistance=resistance, news=news,
+              levels_text=(f"ราคาซื้อ {e:.1f} / กำไรตอนนี้ {gain:+.1f}% / สูงสุดตั้งแต่ซื้อ {peak:.1f} ({peak_gain:+.1f}%) / "
+                           f"เป้าแรก {tp_price:.1f} / ตัดขาดทุน {stop:.1f} / "
+                           + (f"จุดขายตาม {trail:.1f} / " if trail else "")
+                           + f"เป้าถัดไป +{nxt}% = {nxt_price:.1f} / ATR14 {atr:.1f} / RSI14 {rsi:.0f}"))
+
+    def out(icon, title, why):
+        return dict(icon=icon, title=title, why=why, plan=None, signal=icon in ("🟢", "🔴", "🔵"), **lv)
+
+    if e <= 0:
+        return out("⚠️", "ข้อมูลผิดปกติ", "ยังไม่ได้ใส่ราคาซื้อ")
+    if not reached and px <= stop:
+        return out("🔴", "ตัดขาดทุน", f"ราคาหลุดจุดตัดขาดทุน {r0(stop)}")
+    if reached and px <= trail:
+        return out("🟢", "ขายได้: หลุดจุดขายตาม", f"ราคาย่อจากยอด {r0(peak)} ลงมาหลุด {r0(trail)}")
+    if gain >= TAKE_PROFIT:
+        if overbought:
+            return out("🟢", "ขายได้: ร้อนแรงเกินไป", f"RSI {rsi:.0f} สูงมาก มักพักตัวหรือย่อแรง")
+        if uptrend and near_peak:
+            return out("🔵", "ถึงเป้าแล้ว ยังขึ้นต่อ", f"ราคาเหนือ SMA20 ที่ยังชันขึ้น และใกล้ยอดใหม่")
+        return out("🟢", "ขายได้: กำไรถึงเป้า แรงขึ้นเริ่มหมด",
+                   "ราคาไม่ทำยอดใหม่" if not near_peak else "ราคาหลุด SMA20 หรือเส้นเริ่มแบน")
+    if reached:
+        return out("🟠", "กำไรลดลงจากยอด", f"เคยกำไร {peak_gain:+.1f}% ตอนนี้เหลือ {gain:+.1f}%")
+    return out("⚪", "ถือต่อ", f"อีก {TAKE_PROFIT - gain:.1f}% ถึงเป้าแรก")
+
+
+def format_hold(d, r):
+    when = d["stamp"].astimezone(BKK).strftime("%H:%M")
+    v, t, e = verdict(r), r["title"], r["entry"]
+    lines = [v, f"ราคาตอนนี้ {r0(d['px'])} ({when} น.) | ซื้อที่ {r0(e)} | กำไร {r['gain']:+.1f}%", ""]
+    nxt_line = f"🎯 เป้าถัดไป: +{r['nxt']}% = {r0(r['nxt_price'])}"
+    if r["resistance"] and r["resistance"] < r["nxt_price"]:
+        nxt_line += f" (มีแนวต้าน {r0(r['resistance'])} คั่นอยู่)"
+
+    if v.startswith("🟢"):
+        reason = {"ขายได้: หลุดจุดขายตาม": f"ราคาย่อจากยอด {r0(r['peak'])} ({r['peak_gain']:+.1f}%) ลงมาหลุดจุดขายตาม {r0(r['trail'])} แรงขึ้นจบรอบแล้ว",
+                  "ขายได้: ร้อนแรงเกินไป": f"RSI {r['rsi']:.0f} สูงเกินไป ราคามักพักตัวหรือย่อแรงหลังจากนี้",
+                  "ขายได้: กำไรถึงเป้า แรงขึ้นเริ่มหมด": f"กำไรถึงเป้า {TAKE_PROFIT:.0f}% แล้ว แต่{r['why']} โอกาสขึ้นต่อน้อยลง"}.get(t, r["why"])
+        lines += [f"เหตุผล: {reason}", "", f"💰 ถ้าขายตอนนี้ได้กำไร {r['gain']:+.1f}%"]
+        if "หลุดจุดขายตาม" in t:
+            lines.append("• ขายเก็บกำไรที่เหลือ อย่ารอให้กำไรหายไปมากกว่านี้")
+        else:
+            lines.append(f"• ขายทั้งหมด หรือทยอยขายครึ่งหนึ่ง แล้วถือที่เหลือโดยตั้งขายที่ {r0(r['trail'])}")
+    elif v.startswith("🔵"):
+        lines += [f"เหตุผล: กำไรเกินเป้า {TAKE_PROFIT:.0f}% แล้ว และแนวโน้มยังขึ้น ({r['why']})",
+                  "",
+                  nxt_line,
+                  f"🛡️ จุดขายตาม {r0(r['trail'])} (ล็อกกำไร {(r['trail'] - e) / e * 100:+.1f}%) ถ้าหลุดจะเปลี่ยนเป็น 🟢 ขายได้",
+                  "",
+                  "จะเปลี่ยนเป็น 🟢 ขายได้ ถ้า:",
+                  f"• ราคาหลุด {r0(r['trail'])}",
+                  f"• RSI ขึ้นถึง 80 (ตอนนี้ {r['rsi']:.0f})",
+                  f"• ราคาหลุด SMA20 {r0(r['sma20'])} หรือย่อจากยอดเกิน {r0(r['atr'])} ดอลลาร์",
+                  "",
+                  "ไม่อยากเสี่ยงคืนกำไร: ขายครึ่งหนึ่งตอนนี้ แล้วปล่อยอีกครึ่งวิ่งตามเป้าถัดไป"]
+    elif v.startswith("🟠"):
+        lines += [f"เหตุผล: {r['why']} ราคาเริ่มย่อจากยอด {r0(r['peak'])}",
+                  "",
+                  f"🛡️ จุดขายตาม {r0(r['trail'])} ถ้าหลุดควรขายเก็บกำไรที่เหลือ",
+                  f"• ถ้ากลับขึ้นไปเหนือ {r0(r['tp_price'])} (+{TAKE_PROFIT:.0f}%) จะประเมินถือต่อใหม่"]
+    elif v.startswith("🔴"):
+        lines += [f"เหตุผล: ราคาลงถึงจุดตัดขาดทุน {r0(r['stop'])} (ราคาซื้อ − {STOP_ATR:g}×ATR)",
+                  f"ขาดทุนตอนนี้ {r['gain']:.1f}%",
+                  "",
+                  "• ตัดขาดทุนตามแผน ดีกว่าถือรอแล้วติดลึก",
+                  "• ขายแล้วอย่าลืมลบ ENTRY_PRICE ให้บอทกลับไปหาจังหวะซื้อ"]
+    elif v.startswith("⚪"):
+        lines += [f"เหตุผล: กำไรยังไม่ถึงเป้า {TAKE_PROFIT:.0f}%",
+                  "",
+                  f"🎯 เป้าแรก {r0(r['tp_price'])} (+{TAKE_PROFIT:.0f}% อีก {r0(r['tp_price'] - d['px'])} ดอลลาร์)",
+                  f"🛑 ตัดขาดทุน {r0(r['stop'])} ({(r['stop'] - e) / e * 100:.1f}%)"]
+    else:
+        lines.append(f"เหตุผล: {r['why']}")
+    if r["news"]:
+        lines += ["", f"📰 ใกล้ข่าวสำคัญ ({r['news']}) ราคาอาจวิ่งแรง ถ้ามีกำไรแล้วพิจารณาขายบางส่วนก่อนข่าว"]
+    trend = "ขาขึ้น" if r["uptrend"] else ("ขาลง" if r["sma20"] < r["sma50"] else "เริ่มอ่อนแรง")
+    lines += ["",
+              f"ภาพรวม: สูงสุดตั้งแต่ซื้อ {r0(r['peak'])} ({r['peak_gain']:+.1f}%) | RSI {r['rsi']:.0f} | เทรนด์ {trend}",
+              "แจ้งสถานการณ์ตามกฎ ไม่ใช่คำแนะนำการลงทุน"]
+    if not BUY_DATE:
+        lines.append("ℹ️ ใส่ BUY_DATE (วันที่ซื้อ) ใน Variables ให้บอทจำยอดสูงสุดตั้งแต่ซื้อได้แม่นขึ้น")
+    return "\n".join(lines)
+
+
+def format_any(d, r):
+    if r.get("mode") == "hold":
+        return format_hold(d, r)
+    return format_dip(d, r) if r.get("mode") == "dip3" else format_message(d, r)
+
+
 # ---------------------------------------------------------------- senders
 def post(url, data, as_json=False):
     if as_json:
@@ -480,7 +643,9 @@ def main():
     if age_h > 2:
         print(f"ข้อมูลเก่า {age_h:.1f} ชม. (อาจเป็นช่วงพักตลาด) ข้ามรอบนี้")
         return
-    if STRATEGY == "pivot":
+    if ENTRY_PRICE > 0:
+        r = evaluate_hold(d, news=news_soon(now))
+    elif STRATEGY == "pivot":
         r = evaluate(d, news=news_soon(now))
     else:
         r = evaluate_dip(d, news=news_soon(now))
@@ -489,9 +654,9 @@ def main():
     scheduled = os.getenv("GITHUB_EVENT_NAME") == "schedule" or os.getenv("RUN_MODE") == "auto"
     only_signals = ONLY_SIGNALS or (scheduled and th_hour not in FULL_HOURS)
     if only_signals and not r["signal"]:
-        print("ไม่มีสัญญาณ ไม่ส่งข้อความ\n" + (format_dip(d, r) if r.get("mode") == "dip3" else format_message(d, r)))
+        print("ไม่มีสัญญาณ ไม่ส่งข้อความ\n" + format_any(d, r))
         return
-    msg = format_dip(d, r) if r.get("mode") == "dip3" else format_message(d, r)
+    msg = format_any(d, r)
     ai = ai_analysis(d, r)
     if ai:
         msg += "\n\n🤖 AI วิเคราะห์ (Gemini)\n" + ai
